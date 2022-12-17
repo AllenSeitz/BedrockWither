@@ -30,11 +30,12 @@ import org.slf4j.Logger;
 public class BedrockWither
 {
 	// Directly reference a slf4j logger
-	public static final Logger LOGGER = LogUtils.getLogger();
+	private static final Logger LOGGER = LogUtils.getLogger();
+	private static int TEMP_LOGGING_LEVEL = 0;
 
 	public static final String MOD_ID = "bwither";
 	public static final String BEDROCK_WITHER_ID = "bedrock_wither";
-	public static final String BEDROCK_WITHER_SKULL_ID = "bedrock_wither_skull";
+	public static final String BEDROCK_WITHER_SKULL_ID = "bwither_skull";
 
 	public static final DeferredRegister<EntityType<?>> ENTITY_REG = DeferredRegister.create(ForgeRegistries.ENTITIES, BedrockWither.MOD_ID);
 
@@ -43,7 +44,7 @@ public class BedrockWither
 	public static final RegistryObject<EntityType<EntityBedrockWitherSkull>> BEDROCK_WITHER_SKULL = ENTITY_REG.register(BEDROCK_WITHER_SKULL_ID, () -> EntityType.Builder.<EntityBedrockWitherSkull>of(EntityBedrockWitherSkull::new, MobCategory.MISC).sized(0.3125f, 0.3125f).clientTrackingRange(4).updateInterval(10).build("bedrock_wither_skull"));
 
 	public static final ForgeEvents eventHandler = new ForgeEvents();
-	
+		
 	public BedrockWither()
 	{
 		// Register the setup method for modloading
@@ -62,7 +63,7 @@ public class BedrockWither
 
 	private void setup(final FMLCommonSetupEvent event)
 	{
-		LOGGER.info("Mod Bedrock Wither starting up!");
+		//LOGGER.info("Mod Bedrock Wither starting up!");
 	}
 
 	private void enqueueIMC(final InterModEnqueueEvent event)
@@ -100,5 +101,18 @@ public class BedrockWither
 			event.registerEntityRenderer(BEDROCK_WITHER.get(), RendererBedrockWither::new);
 			event.registerEntityRenderer(BEDROCK_WITHER_SKULL.get(), WitherSkullRenderer::new);
 		}
+	}
+	
+	public static void logInfo(String message)
+	{
+		if ( TEMP_LOGGING_LEVEL == 1 )
+		{
+			LOGGER.info(message);
+		}
+	}
+
+	public static void logError(String message)
+	{
+		LOGGER.error(message);
 	}
 }

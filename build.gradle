@@ -18,7 +18,7 @@ plugins {
 apply plugin: 'net.minecraftforge.gradle'
 apply plugin: 'org.parchmentmc.librarian.forgegradle'
 
-version = '1'
+version = '10'
 group = 'com.catastrophe573.bwither' // http://maven.apache.org/guides/mini/guide-naming-conventions.html
 archivesBaseName = 'bwither'
 

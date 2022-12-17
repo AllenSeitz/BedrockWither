@@ -10,7 +10,6 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.projectile.WitherSkull;
-import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -64,7 +63,19 @@ public class EntityBedrockWitherSkull extends WitherSkull
 			if (entity1 instanceof LivingEntity)
 			{
 				LivingEntity livingentity = (LivingEntity) entity1;
-				flag = entity.hurt(DamageSource.witherSkull(this, livingentity), 8.0F);
+
+				float damage = 12.0f;
+				if (this.level.getDifficulty() == Difficulty.EASY)
+				{
+					damage = 5;
+				}
+				else if (this.level.getDifficulty() == Difficulty.NORMAL)
+				{
+					damage = 8;
+				}
+
+				flag = entity.hurt(DamageSource.witherSkull(this, livingentity), damage);
+
 				if (flag)
 				{
 					if (entity.isAlive())
@@ -75,9 +86,6 @@ public class EntityBedrockWitherSkull extends WitherSkull
 					{
 						// this line is intentionally commented out
 						// livingentity.heal(5.0F);
-
-						// instead, Wither Roses drop as an item
-						this.spawnAtLocation(Items.WITHER_ROSE);
 					}
 				}
 			}

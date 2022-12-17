@@ -207,7 +207,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 		}
 
 		// appears to implement the slow downwards falling? This is unused because I set the Forge gravity to 0
-		Vec3 deltaMovement = this.getDeltaMovement().multiply(1.0D, 0.6D, 1.0D); // a slow downward featherfall, like Java
+		Vec3 deltaMovement = this.getDeltaMovement().multiply(1.0D, 0.6D, 1.0D);
 
 		if (!this.level.isClientSide && getDashTarget() != null)
 		{
@@ -236,11 +236,11 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 				deltaMovement = Vec3.ZERO;
 				if (ticksSpentDashing >= 160)
 				{
-					BedrockWither.LOGGER.info("Destination: gave up because we took long. Probably stuck on bedrock or something.");
+					BedrockWither.logInfo("Destination: gave up because we took long. Probably stuck on bedrock or something.");
 				}
 				else
 				{
-					BedrockWither.LOGGER.info("Destination: arrived!");
+					BedrockWither.logInfo("Destination: arrived!");
 				}
 				ticksSpentDashing = 0;
 			}
@@ -267,7 +267,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 			this.xRotOHeads[i] = this.xRotHeads[i];
 		}
 
-		// implement head turning (all 3 heads face the same target)
+		// implement head turning (all 3 heads face the same target) - this was copied from WitherBoss
 		for (int j = 0; j < 2; ++j)
 		{
 			int k = this.getWitherTarget();
@@ -344,7 +344,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 					{
 						this.level.globalLevelEvent(1023, this.blockPosition(), 0);
 					}
-					BedrockWither.LOGGER.info("FINISHED INITIAL SPAWN IN");
+					BedrockWither.logInfo("FINISHED INITIAL SPAWN IN");
 				}
 
 				// fill the HP bar during the spawn animation
@@ -391,7 +391,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 					level.addFreshEntity(ne_add);
 					level.addFreshEntity(se_add);
 					level.broadcastEntityEvent(this, (byte) 18); // I don't know, I copied this from vanilla
-					BedrockWither.LOGGER.info("CREATED WITHER SKELETONS");
+					BedrockWither.logInfo("CREATED WITHER SKELETONS");
 				}
 			}
 		}
@@ -407,7 +407,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 				{
 					skullVolleyUpdates[i] = 0;
 
-					BedrockWither.LOGGER.info("Volley: " + i);
+					BedrockWither.logInfo("Volley: " + i);
 					LivingEntity targetEntity = (LivingEntity) this.level.getEntity(targetID);
 					if (targetEntity != null && this.canAttack(targetEntity) && !(this.distanceToSqr(targetEntity) > 900.0D))
 					{
@@ -419,7 +419,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 			{
 				skullVolleyPostDelay = 0;
 				volleysCompleted++;
-				BedrockWither.LOGGER.info("Post-delay complete.");
+				BedrockWither.logInfo("Post-delay complete.");
 			}
 
 			// head targeting logic, mostly unchanged from vanilla, except now for only a single head instead of 3
@@ -453,10 +453,8 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 					LivingEntity targetEntity = (LivingEntity) this.level.getEntity(targetID);
 					if (targetEntity != null && this.canAttack(targetEntity) && this.distanceToSqr(targetEntity) < 900.0D)
 					{
-						// this.performRangedAttack(0, targetEntity, false);
 						// this.nextHeadUpdate[0] = this.tickCount + 40 + this.random.nextInt(20); // original code, needs to decrease with lost HP
-						// this.nextHeadUpdate[0] = this.tickCount + 160 + getNextActionDelay(); // returns a number from 20-40, depending on health remaining in each phase
-						this.nextHeadUpdate[0] = this.tickCount + getSkullVolleyDelay() * 12;
+						this.nextHeadUpdate[0] = this.tickCount + getSkullVolleyDelay() * 12; // returns a value depending on health remaining in each phase
 						this.idleHeadUpdates[0] = 0;
 						int baseDelay = getSkullVolleyDelay() * 2;
 						skullVolleyUpdates[0] = this.tickCount + baseDelay + (getSkullVolleyDelay());
@@ -520,15 +518,15 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 							BlockPos orbitPoint = new BlockPos(target.getX() + xoff, target.getY() + 5, target.getZ() + zoff);
 							setDashTarget(orbitPoint);
 							setIsDashing(true);
-							BedrockWither.LOGGER.info("Destination Phase 1: set - " + orbitPoint.getX() + ", " + orbitPoint.getY() + ", " + orbitPoint.getZ());
+							BedrockWither.logInfo("Destination Phase 1: set - " + orbitPoint.getX() + ", " + orbitPoint.getY() + ", " + orbitPoint.getZ());
 						}
 						else
 						{
 							// during phase 2 dash directly towards the target, about 12 blocks each time
 							dashAtTarget(target.getX(), target.getY(), target.getZ());
 							setIsDashing(true);
-							BedrockWither.LOGGER.info("Destination Phase 2: start - " + Math.floor(this.getX()) + ", " + Math.floor(this.getY()) + ", " + Math.floor(this.getZ()));
-							BedrockWither.LOGGER.info("Destination Phase 2: set   - " + Math.floor(target.getX()) + ", " + Math.floor(target.getY()) + ", " + Math.floor(target.getZ()));
+							BedrockWither.logInfo("Destination Phase 2: start - " + Math.floor(this.getX()) + ", " + Math.floor(this.getY()) + ", " + Math.floor(this.getZ()));
+							BedrockWither.logInfo("Destination Phase 2: set   - " + Math.floor(target.getX()) + ", " + Math.floor(target.getY()) + ", " + Math.floor(target.getZ()));
 						}
 					}
 				}
@@ -715,7 +713,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 		return 5;
 	}
 
-	// BlockState.canEntityDestroy is useless because it has hardcoded checks for WitherBoss
+	// BlockState.canEntityDestroy() is useless because it has hardcoded checks for WitherBoss
 	// so I have to check for this tag myself
 	public static boolean canDestroy(BlockState pBlock)
 	{
@@ -757,7 +755,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 					Explosion.BlockInteraction explosion$blockinteraction = net.minecraftforge.event.ForgeEventFactory.getMobGriefingEvent(this.level, this) ? Explosion.BlockInteraction.DESTROY : Explosion.BlockInteraction.NONE;
 					this.level.explode(this, this.getX(), this.getEyeY(), this.getZ(), 7.0F, false, explosion$blockinteraction);
 					this.setPhaseChange(3);
-					BedrockWither.LOGGER.info("FINAL BWITHER EXPLOSION");
+					BedrockWither.logInfo("FINAL BWITHER EXPLOSION");
 
 					// this causes the item drop, statistics, etc
 					if (savedDamageSource != null)
@@ -854,7 +852,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 		this.performRangedAttack(pHead, pTarget.getX(), pTarget.getY() + (double) pTarget.getEyeHeight() * 0.5D, pTarget.getZ(), makeItBlue);
 	}
 
-	// Launches a Wither skull toward (par2, par4, par6)
+	// Launches a Wither skull toward (pX, pY, pZ)
 	private void performRangedAttack(int pHead, double pX, double pY, double pZ, boolean makeItBlue)
 	{
 		if (!this.isSilent())
@@ -883,7 +881,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 	@Override
 	public void performRangedAttack(LivingEntity pTarget, float pDistanceFactor)
 	{
-		BedrockWither.LOGGER.info("BWITHER: parent version of PerformRangedAttack() called unexpectedly?");
+		BedrockWither.logInfo("BWITHER: parent version of PerformRangedAttack() called unexpectedly?");
 		this.performRangedAttack(0, pTarget, false);
 	}
 

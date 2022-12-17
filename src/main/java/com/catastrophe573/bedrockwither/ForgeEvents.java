@@ -15,8 +15,6 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 public class ForgeEvents
 {
-	// TODO: on kill event for wither roses, and remove wither roses from EntityBedrockWitherSkull
-
 	// this was somewhat copied from LivingEntity::createWitherRose(), which is surprisingly called for every entity that dies
 	@SubscribeEvent
 	public void livingDeathEvent(LivingDeathEvent event)
