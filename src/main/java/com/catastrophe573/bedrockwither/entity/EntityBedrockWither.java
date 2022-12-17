@@ -14,6 +14,7 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerBossEvent;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
@@ -25,10 +26,14 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntitySelector;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.MobType;
 import net.minecraft.world.entity.PowerableMob;
+import net.minecraft.world.entity.SpawnGroupData;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.control.FlyingMoveControl;
@@ -36,8 +41,6 @@ import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
 import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
 import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomFlyingGoal;
-import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
-import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
 import net.minecraft.world.entity.ai.navigation.FlyingPathNavigation;
 import net.minecraft.world.entity.ai.navigation.PathNavigation;
 import net.minecraft.world.entity.ai.targeting.TargetingConditions;
@@ -63,7 +66,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 	private static final EntityDataAccessor<Integer> DATA_ID_DASH_TARGET_X = SynchedEntityData.defineId(EntityBedrockWither.class, EntityDataSerializers.INT);
 	private static final EntityDataAccessor<Integer> DATA_ID_DASH_TARGET_Y = SynchedEntityData.defineId(EntityBedrockWither.class, EntityDataSerializers.INT);
 	private static final EntityDataAccessor<Integer> DATA_ID_DASH_TARGET_Z = SynchedEntityData.defineId(EntityBedrockWither.class, EntityDataSerializers.INT);
-	private static final EntityDataAccessor<Integer> DATA_ID_DASH_TIME = SynchedEntityData.defineId(EntityBedrockWither.class, EntityDataSerializers.INT);
+	private static final EntityDataAccessor<Integer> DATA_ID_IS_DASHING = SynchedEntityData.defineId(EntityBedrockWither.class, EntityDataSerializers.INT);
 
 	private static final int INVULNERABLE_TICKS = 220;
 	private final float[] xRotHeads = new float[2];
@@ -79,9 +82,9 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 	DamageSource savedDamageSource = null;
 	private int[] skullVolleyUpdates = new int[] { 0, 0, 0, 0 };
 	int skullVolleyPostDelay = 0;
+	int volleysCompleted = 0; // fires one volley before moving in the first phase, two in the second
+	int ticksSpentDashing = 0; // for detecting when it is stuck, and when to give up
 
-	private BlockPos dashTarget;
-	private int dashTimer;
 	private boolean freshlySpawned = true; // set to false on the first update tick
 
 	// this seems to decide who the wither chooses for valid targets
@@ -91,14 +94,18 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 	};
 
 	// this also seems important for choosing targets
-	private static final TargetingConditions TARGETING_CONDITIONS = TargetingConditions.forCombat().range(20.0D).selector(LIVING_ENTITY_SELECTOR);
+	private static final TargetingConditions TARGETING_CONDITIONS = TargetingConditions.forCombat().range(40.0D).selector(LIVING_ENTITY_SELECTOR);
 
 	public EntityBedrockWither(EntityType<? extends EntityBedrockWither> type, Level worldIn)
 	{
 		super(type, worldIn);
 		this.moveControl = new FlyingMoveControl(this, 10, false);
 		this.setHealth(this.getMaxHealth());
-		this.xpReward = 50;		
+		this.xpReward = 50;
+
+		this.setNoGravity(true); // apparently does nothing in Forge?
+		AttributeInstance gravity = this.getAttributes().getInstance(net.minecraftforge.common.ForgeMod.ENTITY_GRAVITY.get());
+		gravity.setBaseValue(0);
 	}
 
 	protected PathNavigation createNavigation(Level pLevel)
@@ -118,8 +125,9 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 		this.goalSelector.addGoal(6, new LookAtPlayerGoal(this, Player.class, 8.0F));
 		this.goalSelector.addGoal(7, new RandomLookAroundGoal(this));
 
-		this.targetSelector.addGoal(1, new HurtByTargetGoal(this));
-		this.targetSelector.addGoal(2, new NearestAttackableTargetGoal<>(this, LivingEntity.class, 0, false, false, LIVING_ENTITY_SELECTOR));
+		// manual targeting is working better
+		//this.targetSelector.addGoal(1, new HurtByTargetGoal(this));
+		//this.targetSelector.addGoal(2, new NearestAttackableTargetGoal<>(this, LivingEntity.class, 0, false, false, LIVING_ENTITY_SELECTOR));
 	}
 
 	protected void defineSynchedData()
@@ -132,7 +140,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 		this.entityData.define(DATA_ID_DASH_TARGET_X, 0);
 		this.entityData.define(DATA_ID_DASH_TARGET_Y, 0);
 		this.entityData.define(DATA_ID_DASH_TARGET_Z, 0);
-		this.entityData.define(DATA_ID_DASH_TIME, 0);
+		this.entityData.define(DATA_ID_IS_DASHING, 0);
 	}
 
 	public void addAdditionalSaveData(CompoundTag pCompound)
@@ -147,7 +155,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 			pCompound.putInt("DashTargetY", this.getDashTarget().getY());
 			pCompound.putInt("DashTargetZ", this.getDashTarget().getZ());
 		}
-		pCompound.putInt("DashTime", this.getDashTime());
+		pCompound.putInt("IsDash", this.isDashing() ? 1 : 0);
 	}
 
 	public void readAdditionalSaveData(CompoundTag pCompound)
@@ -155,14 +163,15 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 		super.readAdditionalSaveData(pCompound);
 		this.setInvulnerableTicks(pCompound.getInt("Invul"));
 		this.setPhaseChange(pCompound.getInt("PhaseChange"));
+
+		BlockPos target = new BlockPos(pCompound.getInt("DashTargetX"), pCompound.getInt("DashTargetY"), pCompound.getInt("DashTargetZ"));
+		this.setDashTarget(target);
+		this.setIsDashing(pCompound.getInt("IsDash") == 1 ? true : false);
+
 		if (this.hasCustomName())
 		{
 			this.bossEvent.setName(this.getDisplayName());
 		}
-
-		BlockPos target = new BlockPos(pCompound.getInt("DashTargetX"), pCompound.getInt("DashTargetY"), pCompound.getInt("DashTargetZ"));
-		this.setDashTarget(target);
-		this.setDashTime(pCompound.getInt("DashTime"));
 	}
 
 	public void setCustomName(@Nullable Component pName)
@@ -186,22 +195,22 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 		return SoundEvents.WITHER_DEATH;
 	}
 
-	/**
-	 * Called frequently so the entity can update its state every tick as required. For example, zombies and skeletons use this to react to sunlight and start to burn.
-	 */
+	// Called frequently so the entity can update its state every tick as required. For example, zombies and skeletons use this to react to sunlight and start to burn.
+	// this is only called on the server?
 	public void aiStep()
 	{
 		// run once, after spawning. For some reason all entities seem to spawn at 0,0 and then move later?
-		if ( freshlySpawned )
+		if (freshlySpawned)
 		{
 			setDashTarget(this.blockPosition());
 			freshlySpawned = false;
 		}
 
-		Vec3 deltaMovement = this.getDeltaMovement().multiply(1.0D, 0.6D, 1.0D);
-		
-		if (getDashTarget() != null)
-		{			
+		// appears to implement the slow downwards falling? This is unused because I set the Forge gravity to 0
+		Vec3 deltaMovement = this.getDeltaMovement().multiply(1.0D, 0.6D, 1.0D); // a slow downward featherfall, like Java
+
+		if (!this.level.isClientSide && getDashTarget() != null)
+		{
 			// handle movement on the y-axis
 			double deltaY = deltaMovement.y;
 			if (this.getY() < getDashTarget().getY())
@@ -212,18 +221,28 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 			deltaMovement = new Vec3(deltaMovement.x, deltaY, deltaMovement.z);
 
 			// handle movement on the x/z plane
-			Vec3 tempDelta = new Vec3(getDashTarget().getX() - this.getX(), 0.0D, getDashTarget().getZ() - this.getZ());
-			if (tempDelta.horizontalDistanceSqr() > 2.0D)
+			Vec3 tempDelta = new Vec3(getDashTarget().getX() - this.getX(), getDashTarget().getY() - this.getY(), getDashTarget().getZ() - this.getZ());
+			if (tempDelta.horizontalDistanceSqr() > 2.0D && ticksSpentDashing < 160)
 			{
 				Vec3 vec32 = tempDelta.normalize();
-				deltaMovement = deltaMovement.add(vec32.x * 0.3D - deltaMovement.x * 0.6D, 0.0D, vec32.z * 0.3D - deltaMovement.z * 0.6D);
-				this.destroyBlocksTick = 5; // if moved
+				deltaMovement = deltaMovement.add(vec32.x * 0.3D - deltaMovement.x * 0.6D, vec32.y * 0.3D - deltaMovement.y * 0.6D, vec32.z * 0.3D - deltaMovement.z * 0.6D);
 			}
 			else
 			{
 				// arrived at destination, begin volley
 				setDashTarget(null);
-				BedrockWither.LOGGER.info("Destination: arrived!");
+				setIsDashing(false);
+				volleysCompleted = 0;
+				deltaMovement = Vec3.ZERO;
+				if (ticksSpentDashing >= 160)
+				{
+					BedrockWither.LOGGER.info("Destination: gave up because we took long. Probably stuck on bedrock or something.");
+				}
+				else
+				{
+					BedrockWither.LOGGER.info("Destination: arrived!");
+				}
+				ticksSpentDashing = 0;
 			}
 		}
 
@@ -234,6 +253,12 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 			this.setYRot((float) Mth.atan2(deltaMovement.z, deltaMovement.x) * (180F / (float) Math.PI) - 90.0F);
 		}
 
+		// this implements the dash attack, which I partially copied from the EnderDragon
+		if (!this.level.isClientSide && this.hurtTime == 0 && getPhaseChange() == 2 && isDashing())
+		{
+			this.dashKnockback(this.level.getEntities(this, this.getBoundingBox(), EntitySelector.NO_CREATIVE_OR_SPECTATOR));
+		}
+
 		super.aiStep();
 
 		for (int i = 0; i < 2; ++i)
@@ -242,15 +267,44 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 			this.xRotOHeads[i] = this.xRotHeads[i];
 		}
 
-		boolean isPowered = this.isPowered();
+		// implement head turning (all 3 heads face the same target)
+		for (int j = 0; j < 2; ++j)
+		{
+			int k = this.getWitherTarget();
+			Entity entity1 = null;
+			if (k > 0)
+			{
+				entity1 = this.level.getEntity(k);
+			}
 
+			if (entity1 != null)
+			{
+				double d9 = this.getHeadX(j + 1);
+				double d1 = this.getHeadY(j + 1);
+				double d3 = this.getHeadZ(j + 1);
+				double d4 = entity1.getX() - d9;
+				double d5 = entity1.getEyeY() - d1;
+				double d6 = entity1.getZ() - d3;
+				double d7 = Math.sqrt(d4 * d4 + d6 * d6);
+				float f = (float) (Mth.atan2(d6, d4) * (double) (180F / (float) Math.PI)) - 90.0F;
+				float f1 = (float) (-(Mth.atan2(d5, d7) * (double) (180F / (float) Math.PI)));
+				this.xRotHeads[j] = this.rotlerp(this.xRotHeads[j], f1, 40.0F);
+				this.yRotHeads[j] = this.rotlerp(this.yRotHeads[j], f, 10.0F);
+			}
+			else
+			{
+				this.yRotHeads[j] = this.rotlerp(this.yRotHeads[j], this.yBodyRot, 10.0F);
+			}
+		}
+
+		// particles for phase 2 when it has wither armor
 		for (int l = 0; l < 3; ++l)
 		{
 			double d8 = this.getHeadX(l);
 			double d10 = this.getHeadY(l);
 			double d2 = this.getHeadZ(l);
 			this.level.addParticle(ParticleTypes.SMOKE, d8 + this.random.nextGaussian() * (double) 0.3F, d10 + this.random.nextGaussian() * (double) 0.3F, d2 + this.random.nextGaussian() * (double) 0.3F, 0.0D, 0.0D, 0.0D);
-			if (isPowered && this.level.random.nextInt(4) == 0)
+			if (this.isPowered() && this.level.random.nextInt(4) == 0)
 			{
 				this.level.addParticle(ParticleTypes.ENTITY_EFFECT, d8 + this.random.nextGaussian() * (double) 0.3F, d10 + this.random.nextGaussian() * (double) 0.3F, d2 + this.random.nextGaussian() * (double) 0.3F, (double) 0.7F, (double) 0.7F, 0.5D);
 			}
@@ -315,15 +369,28 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 					WitherSkeleton sw_add = EntityType.WITHER_SKELETON.create(this.level);
 					WitherSkeleton ne_add = EntityType.WITHER_SKELETON.create(this.level);
 					WitherSkeleton se_add = EntityType.WITHER_SKELETON.create(this.level);
+					nw_add.finalizeSpawn((ServerLevel) this.level, level.getCurrentDifficultyAt(this.blockPosition()), MobSpawnType.MOB_SUMMONED, (SpawnGroupData) null, (CompoundTag) null);
+					sw_add.finalizeSpawn((ServerLevel) this.level, level.getCurrentDifficultyAt(this.blockPosition()), MobSpawnType.MOB_SUMMONED, (SpawnGroupData) null, (CompoundTag) null);
+					ne_add.finalizeSpawn((ServerLevel) this.level, level.getCurrentDifficultyAt(this.blockPosition()), MobSpawnType.MOB_SUMMONED, (SpawnGroupData) null, (CompoundTag) null);
+					se_add.finalizeSpawn((ServerLevel) this.level, level.getCurrentDifficultyAt(this.blockPosition()), MobSpawnType.MOB_SUMMONED, (SpawnGroupData) null, (CompoundTag) null);
 					LivingEntity target = (LivingEntity) this.level.getEntity(this.getWitherTarget()); // can be null, no big deal
 					nw_add.setTarget(target);
 					sw_add.setTarget(target);
 					ne_add.setTarget(target);
 					se_add.setTarget(target);
-					nw_add.setPos(this.getX() - 2.0D, this.getY() - 1.0D, this.getZ() - 2.0D);
-					sw_add.setPos(this.getX() + 2.0D, this.getY() - 1.0D, this.getZ() - 2.0D);
-					ne_add.setPos(this.getX() - 2.0D, this.getY() - 1.0D, this.getZ() + 2.0D);
-					se_add.setPos(this.getX() + 2.0D, this.getY() - 1.0D, this.getZ() + 2.0D);
+					nw_add.invulnerableTime = 60;
+					sw_add.invulnerableTime = 60;
+					ne_add.invulnerableTime = 60;
+					se_add.invulnerableTime = 60;
+					nw_add.setPos(this.getX() - 2.0D, this.getY() + 2.0D, this.getZ() - 2.0D);
+					sw_add.setPos(this.getX() + 2.0D, this.getY() + 2.0D, this.getZ() - 2.0D);
+					ne_add.setPos(this.getX() - 2.0D, this.getY() + 2.0D, this.getZ() + 2.0D);
+					se_add.setPos(this.getX() + 2.0D, this.getY() + 2.0D, this.getZ() + 2.0D);
+					level.addFreshEntity(nw_add);
+					level.addFreshEntity(sw_add);
+					level.addFreshEntity(ne_add);
+					level.addFreshEntity(se_add);
+					level.broadcastEntityEvent(this, (byte) 18); // I don't know, I copied this from vanilla
 					BedrockWither.LOGGER.info("CREATED WITHER SKELETONS");
 				}
 			}
@@ -351,6 +418,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 			if (skullVolleyPostDelay > 0 && this.tickCount >= skullVolleyPostDelay)
 			{
 				skullVolleyPostDelay = 0;
+				volleysCompleted++;
 				BedrockWither.LOGGER.info("Post-delay complete.");
 			}
 
@@ -363,16 +431,19 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 				// fire random blue skulls on normal and hard difficulty when enough time has passed with no target
 				if (this.level.getDifficulty() == Difficulty.NORMAL || this.level.getDifficulty() == Difficulty.HARD)
 				{
-					this.idleHeadUpdates[0] = this.idleHeadUpdates[0] + 1;
-					if (idleHeadUpdates[0] > 15)
+					if (!isDashing() && getWitherTarget() == 0)
 					{
-						// float f = 10.0F;
-						// float f1 = 5.0F;
-						double d0 = Mth.nextDouble(this.random, this.getX() - 10.0D, this.getX() + 10.0D);
-						double d1 = Mth.nextDouble(this.random, this.getY() - 5.0D, this.getY() + 5.0D);
-						double d2 = Mth.nextDouble(this.random, this.getZ() - 10.0D, this.getZ() + 10.0D);
-						this.performRangedAttack(0, d0, d1, d2, true);
-						this.idleHeadUpdates[0] = 0;
+						this.idleHeadUpdates[0] = this.idleHeadUpdates[0] + 1;
+						if (idleHeadUpdates[0] > 15)
+						{
+							// float f = 10.0F;
+							// float f1 = 5.0F;
+							double d0 = Mth.nextDouble(this.random, this.getX() - 10.0D, this.getX() + 10.0D);
+							double d1 = Mth.nextDouble(this.random, this.getY() - 5.0D, this.getY() + 5.0D);
+							double d2 = Mth.nextDouble(this.random, this.getZ() - 10.0D, this.getZ() + 10.0D);
+							this.performRangedAttack(0, d0, d1, d2, true);
+							this.idleHeadUpdates[0] = 0;
+						}
 					}
 				}
 
@@ -380,11 +451,11 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 				if (targetID > 0 && isOkayToStartVolley())
 				{
 					LivingEntity targetEntity = (LivingEntity) this.level.getEntity(targetID);
-					if (targetEntity != null && this.canAttack(targetEntity) && !(this.distanceToSqr(targetEntity) > 900.0D))
+					if (targetEntity != null && this.canAttack(targetEntity) && this.distanceToSqr(targetEntity) < 900.0D)
 					{
 						// this.performRangedAttack(0, targetEntity, false);
 						// this.nextHeadUpdate[0] = this.tickCount + 40 + this.random.nextInt(20); // original code, needs to decrease with lost HP
-						//this.nextHeadUpdate[0] = this.tickCount + 160 + getNextActionDelay(); // returns a number from 20-40, depending on health remaining in each phase
+						// this.nextHeadUpdate[0] = this.tickCount + 160 + getNextActionDelay(); // returns a number from 20-40, depending on health remaining in each phase
 						this.nextHeadUpdate[0] = this.tickCount + getSkullVolleyDelay() * 12;
 						this.idleHeadUpdates[0] = 0;
 						int baseDelay = getSkullVolleyDelay() * 2;
@@ -403,28 +474,37 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 					else
 					{
 						this.setWitherTarget(0);
+						volleysCompleted = 2; // to ensure the first thing it does with regards to the next target, is to move
 					}
 				}
 				else
 				{
-					List<LivingEntity> list = this.level.getNearbyEntities(LivingEntity.class, TARGETING_CONDITIONS, this, this.getBoundingBox().inflate(20.0D, 8.0D, 20.0D));
+					// made the area to search for targets a little larger
+					List<LivingEntity> list = this.level.getNearbyEntities(LivingEntity.class, TARGETING_CONDITIONS, this, this.getBoundingBox().inflate(30.0D, 20.0D, 30.0D));
 					if (!list.isEmpty())
 					{
 						LivingEntity livingentity1 = list.get(this.random.nextInt(list.size()));
 						this.setWitherTarget(livingentity1.getId());
+						volleysCompleted = 2; // to ensure the first thing it does with regards to the next target, is to move
 					}
 					else
 					{
 						this.setWitherTarget(0); // no target
+						volleysCompleted = 2; // to ensure the first thing it does with regards to the next target, is to move
 					}
 				}
+			}
+
+			if (isDashing())
+			{
+				ticksSpentDashing++;
 			}
 
 			// only update movement positions if there is a target
 			if (getWitherTarget() > 0)
 			{
-				// The Wither is supposed to dash to a certain point, then stop and fire shots, then dash again. Standing still for a few seconds each time. (Both phases.)
-				if (this.getDashTime() < this.tickCount && isOkayToStartDash() )
+				// The Wither is supposed to dash to a certain point, then stop and fire shots, then dash again. Standing still for a few seconds each time. (Both phases, except two volleys per dash in phase 2.)
+				if (isOkayToStartDash())
 				{
 					Entity target = this.level.getEntity(this.getWitherTarget());
 					if (target != null)
@@ -437,32 +517,33 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 							double xoff = Math.cos(angle) * distance;
 							double zoff = Math.sin(angle) * distance;
 
-							BlockPos orbitPoint = new BlockPos(target.getX() + xoff, target.getY(), target.getZ() + zoff);
+							BlockPos orbitPoint = new BlockPos(target.getX() + xoff, target.getY() + 5, target.getZ() + zoff);
 							setDashTarget(orbitPoint);
-							setDashTime(this.tickCount + (getSkullVolleyDelay() * 8)); // time until the next orbit point is chosen
+							setIsDashing(true);
 							BedrockWither.LOGGER.info("Destination Phase 1: set - " + orbitPoint.getX() + ", " + orbitPoint.getY() + ", " + orbitPoint.getZ());
 						}
 						else
 						{
-							// during phase 2 try to stand on top of the player, same as java basically
+							// during phase 2 dash directly towards the target, about 12 blocks each time
 							dashAtTarget(target.getX(), target.getY(), target.getZ());
-							setDashTime(this.tickCount + (getSkullVolleyDelay() * 8));
-							BedrockWither.LOGGER.info("Destination Phase 2: set - " + target.getX() + ", " + target.getY() + ", " + target.getZ());
+							setIsDashing(true);
+							BedrockWither.LOGGER.info("Destination Phase 2: start - " + Math.floor(this.getX()) + ", " + Math.floor(this.getY()) + ", " + Math.floor(this.getZ()));
+							BedrockWither.LOGGER.info("Destination Phase 2: set   - " + Math.floor(target.getX()) + ", " + Math.floor(target.getY()) + ", " + Math.floor(target.getZ()));
 						}
 					}
 				}
-			}			
-			
+			}
+
 			// on some ticks (after taking damage OR MOVING) break any blocks inside this wither's hitbox
 			// in phase 2, always break blocks
-			if (this.destroyBlocksTick > 0)
+			if (this.destroyBlocksTick > 0 || isDashing())
 			{
 				if (destroyBlocksTick > 0)
 				{
 					--this.destroyBlocksTick;
 				}
 
-				if (this.destroyBlocksTick == 0 && net.minecraftforge.event.ForgeEventFactory.getMobGriefingEvent(this.level, this))
+				if ((this.destroyBlocksTick == 0 || isDashing()) && net.minecraftforge.event.ForgeEventFactory.getMobGriefingEvent(this.level, this))
 				{
 					int j1 = Mth.floor(this.getY());
 					int i2 = Mth.floor(this.getX());
@@ -480,7 +561,7 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 								int i1 = j2 + k2;
 								BlockPos blockpos = new BlockPos(l2, l, i1);
 								BlockState blockstate = this.level.getBlockState(blockpos);
-								if (blockstate.canEntityDestroy(this.level, blockpos, this) && net.minecraftforge.event.ForgeEventFactory.onEntityDestroyBlock(this, blockpos, blockstate))
+								if (canDestroy(blockstate) && net.minecraftforge.event.ForgeEventFactory.onEntityDestroyBlock(this, blockpos, blockstate))
 								{
 									brokeAnyBlocks = this.level.destroyBlock(blockpos, true, this) || brokeAnyBlocks;
 								}
@@ -513,16 +594,57 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 		}
 	}
 
+	// called from inside the dash attack to implement the effects
+	private void dashKnockback(List<Entity> pEntities)
+	{
+		double hitCenterX = (this.getBoundingBox().minX + this.getBoundingBox().maxX) / 2.0D;
+		double hitCenterZ = (this.getBoundingBox().minZ + this.getBoundingBox().maxZ) / 2.0D;
+
+		for (Entity entity : pEntities)
+		{
+			if (entity instanceof LivingEntity)
+			{
+				double hitResultX = entity.getX() - hitCenterX;
+				double hitResultZ = entity.getZ() - hitCenterZ;
+				double exitVector = Math.max(hitResultX * hitResultX + hitResultZ * hitResultZ, 0.1D);
+				double knockbackAmount = 4.0D;
+				entity.push(hitResultX / exitVector * knockbackAmount, (double) 0.2F, hitResultZ / exitVector * knockbackAmount);
+
+				entity.hurt(DamageSource.mobAttack(this), 15.0F); // the dash attack does 15 (7.5 hearts) of damage!
+			}
+		}
+	}
+
 	protected boolean isOkayToStartVolley()
 	{
-		return getDashTarget() == null;
+		int phase = getPhaseChange();
+		if (phase < 2)
+		{
+			return getDashTarget() == null && volleysCompleted < 1;
+		}
+		else if (phase == 2)
+		{
+			return getDashTarget() == null && volleysCompleted < 2;
+		}
+
+		return false; // phase 0 is spawning in and phase 3 is dying
 	}
 
 	protected boolean isOkayToStartDash()
 	{
-		return getDashTarget() == null && skullVolleyPostDelay == 0;
+		int phase = getPhaseChange();
+		if (phase < 2)
+		{
+			return getDashTarget() == null && volleysCompleted >= 1;
+		}
+		else if (phase == 2)
+		{
+			return getDashTarget() == null && volleysCompleted >= 2;
+		}
+
+		return false; // phase 0 is spawning in and phase 3 is dying
 	}
-		
+
 	protected int getNextActionDelay()
 	{
 		float percent = this.getHealth() / this.getMaxHealth();
@@ -593,7 +715,8 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 		return 5;
 	}
 
-	@Deprecated // Forge: DO NOT USE use BlockState.canEntityDestroy
+	// BlockState.canEntityDestroy is useless because it has hardcoded checks for WitherBoss
+	// so I have to check for this tag myself
 	public static boolean canDestroy(BlockState pBlock)
 	{
 		return !pBlock.isAir() && !pBlock.is(BlockTags.WITHER_IMMUNE);
@@ -710,8 +833,6 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 		}
 	}
 
-	// used for turning the side heads to face a target, unused
-	@SuppressWarnings("unused")
 	private float rotlerp(float p_31443_, float p_31444_, float p_31445_)
 	{
 		float f = Mth.wrapDegrees(p_31444_ - p_31443_);
@@ -769,23 +890,20 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 	// does the second phase dash attack
 	protected void dashAtTarget(double pX, double pY, double pZ)
 	{
-		double headX = this.getHeadX(0);
-		double headY = this.getHeadY(0);
-		double headZ = this.getHeadZ(0);
+		double headX = this.getX();
+		double headY = this.getY();
+		double headZ = this.getZ();
 
-		double distanceX = pX - headX;
-		double distanceY = pY - headY;
-		double distanceZ = pZ - headZ;
+		// get the vector from the center head to the target
+		Vec3 targetVector = new Vec3(pX - headX, pY - headY, pZ - headZ);
 
-		// clamp each dimension to 12 blocks traveled, separately
-		distanceX = Math.max(Math.min(distanceX, 12.0D), -12.0D);
-		distanceY = Math.max(Math.min(distanceY, 12.0D), -12.0D);
-		distanceZ = Math.max(Math.min(distanceZ, 12.0D), -12.0D);
+		// the dash attack always goes exactly 12 blocks, even if it would overshoot or not go far enough
+		targetVector = targetVector.normalize();
+		targetVector = targetVector.scale(12.0D);
 
 		// save start and end points of dash
 		BlockPos newTarget = this.blockPosition();
-		newTarget.offset(distanceX, distanceY, distanceZ);
-		this.setDashTarget(newTarget);
+		this.setDashTarget(newTarget.offset(targetVector.x, targetVector.y, targetVector.z));
 	}
 
 	// Called when the entity is attacked.
@@ -831,6 +949,12 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 						this.idleHeadUpdates[i] += 3;
 					}
 
+					// this entity is now the target!
+					if ( pSource != null && pSource.getEntity() != null )
+					{
+						setWitherTarget(pSource.getEntity().getId());
+					}
+					
 					return super.hurt(pSource, pAmount);
 				}
 			}
@@ -926,23 +1050,43 @@ public class EntityBedrockWither extends Monster implements PowerableMob, Ranged
 
 	public BlockPos getDashTarget()
 	{
-		return this.dashTarget;
+		int x = this.entityData.get(DATA_ID_DASH_TARGET_X);
+		int y = this.entityData.get(DATA_ID_DASH_TARGET_Y);
+		int z = this.entityData.get(DATA_ID_DASH_TARGET_Z);
+
+		if (y == -9999)
+		{
+			return null; // intentional and safe
+		}
+
+		return new BlockPos(x, y, z);
 	}
 
 	public void setDashTarget(BlockPos target)
 	{
-		dashTarget = target;
+		if (target == null)
+		{
+			this.entityData.set(DATA_ID_DASH_TARGET_X, 0);
+			this.entityData.set(DATA_ID_DASH_TARGET_Y, -9999); // means the getter should return null
+			this.entityData.set(DATA_ID_DASH_TARGET_Z, 0);
+		}
+		else
+		{
+			this.entityData.set(DATA_ID_DASH_TARGET_X, target.getX());
+			this.entityData.set(DATA_ID_DASH_TARGET_Y, target.getY());
+			this.entityData.set(DATA_ID_DASH_TARGET_Z, target.getZ());
+		}
 	}
 
-	public int getDashTime()
+	public boolean isDashing()
 	{
-		return this.dashTimer;
+		return this.entityData.get(DATA_ID_IS_DASHING) == 1;
 	}
 
 	// parameter is ticks, same as invuln timer
-	public void setDashTime(int pTime)
+	public void setIsDashing(boolean state)
 	{
-		dashTimer = pTime;
+		this.entityData.set(DATA_ID_IS_DASHING, state ? 1 : 0);
 	}
 
 	public boolean isPowered()

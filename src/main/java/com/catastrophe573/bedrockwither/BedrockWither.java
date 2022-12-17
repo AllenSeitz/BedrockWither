@@ -42,6 +42,8 @@ public class BedrockWither
 
 	public static final RegistryObject<EntityType<EntityBedrockWitherSkull>> BEDROCK_WITHER_SKULL = ENTITY_REG.register(BEDROCK_WITHER_SKULL_ID, () -> EntityType.Builder.<EntityBedrockWitherSkull>of(EntityBedrockWitherSkull::new, MobCategory.MISC).sized(0.3125f, 0.3125f).clientTrackingRange(4).updateInterval(10).build("bedrock_wither_skull"));
 
+	public static final ForgeEvents eventHandler = new ForgeEvents();
+	
 	public BedrockWither()
 	{
 		// Register the setup method for modloading
@@ -54,6 +56,7 @@ public class BedrockWither
 		ENTITY_REG.register(FMLJavaModLoadingContext.get().getModEventBus());
 
 		// Register ourselves for server and other game events we are interested in
+		MinecraftForge.EVENT_BUS.register(eventHandler);
 		MinecraftForge.EVENT_BUS.register(this);
 	}
 
